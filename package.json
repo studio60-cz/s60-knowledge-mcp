@@ -1,0 +1,19 @@
+{
+  "name": "s60-knowledge-mcp",
+  "version": "1.0.0",
+  "description": "S60 Knowledge MCP Server — strukturovaný přístup k dokumentaci a rozhodnutím",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7"
+  }
+}
