@@ -9,11 +9,13 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.0"
+    "@modelcontextprotocol/sdk": "^1.6.0",
+    "@qdrant/js-client-rest": "^1.17.0",
+    "fastembed": "^2.1.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.7",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
-    "@types/node": "^22.10.7"
+    "typescript": "^5.7.3"
   }
 }

@@ -14,6 +14,15 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
+import {
+  memoryStore,
+  memoryUpdate,
+  memoryDelete,
+  semanticSearch,
+  semanticSearchGlobal,
+  type MemoryType,
+  type MemoryScope,
+} from "./qdrant.js";
 
 // ─── Konfigurace cest ────────────────────────────────────────────────────────
 
@@ -347,6 +356,100 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: [],
         },
       },
+      {
+        name: "memory_store",
+        description:
+          "Uloží text do sémantické paměti (Qdrant). " +
+          "scope='global' → sdíleno napříč všemi agenty. " +
+          "Ostatní scopy (s60, bw, fess, billit, sentinel...) → per-workspace. " +
+          "Každý agent MUSÍ ukládat rozhodnutí, kontext a důležité informace sem.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "Text k uložení" },
+            scope: {
+              type: "string",
+              description: "Scope: global | s60 | bw | sentinel | billit | shopagent | fess | <vlastní>",
+            },
+            agent: { type: "string", description: "Identifikátor agenta (main, venom, badwolf, fess...)" },
+            type: {
+              type: "string",
+              description: "Typ: decision | context | api | error | doc | note | memory | person | event",
+            },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Volitelné tagy pro filtrování",
+            },
+          },
+          required: ["text", "scope", "agent", "type"],
+        },
+      },
+      {
+        name: "semantic_search",
+        description:
+          "Sémantické vyhledávání v paměti — hledá podle významu, ne přesného textu. " +
+          "Vždy prohledá memory-global + daný scope. " +
+          "Ideální pro: 'co víme o X?', 'jak jsme to řešili?', 'najdi rozhodnutí o Y'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Dotaz v přirozeném jazyce" },
+            scope: {
+              type: "string",
+              description: "Scope workspace (volitelné): s60 | bw | sentinel | billit | fess | ...",
+            },
+            type: {
+              type: "string",
+              description: "Filtr typu (volitelné): decision | context | api | error | doc | note | memory | person | event",
+            },
+            limit: { type: "number", description: "Max výsledků (default: 10)" },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "memory_search_global",
+        description:
+          "Prohledá pouze memory-global — cross-projekt znalosti sdílené všemi agenty. " +
+          "Rychlejší než semantic_search když hledáš obecné konvence nebo architekturu.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Dotaz v přirozeném jazyce" },
+            limit: { type: "number", description: "Max výsledků (default: 10)" },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "memory_update",
+        description: "Aktualizuje existující záznam v Qdrantu (přepíše text + přepočítá vektor).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "UUID záznamu (vráceno z memory_store)" },
+            text: { type: "string", description: "Nový text" },
+            collection: {
+              type: "string",
+              description: "Kolekce: global | workspace (default: workspace)",
+            },
+          },
+          required: ["id", "text"],
+        },
+      },
+      {
+        name: "memory_delete",
+        description: "Smaže záznam z Qdrantu.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "UUID záznamu" },
+            collection: { type: "string", description: "global | workspace (default: workspace)" },
+          },
+          required: ["id"],
+        },
+      },
     ],
   };
 });
@@ -488,6 +591,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  }
+
+  if (name === "memory_store") {
+    try {
+      const id = await memoryStore({
+        text: String(args?.text ?? ""),
+        scope: String(args?.scope ?? "s60") as MemoryScope,
+        agent: String(args?.agent ?? "unknown"),
+        type: String(args?.type ?? "note") as MemoryType,
+        tags: Array.isArray(args?.tags) ? args.tags as string[] : [],
+      });
+      return { content: [{ type: "text", text: `✅ Uloženo do Qdrantu\nID: ${id}\nScope: ${args?.scope}, Type: ${args?.type}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  }
+
+  if (name === "semantic_search") {
+    try {
+      const results = await semanticSearch({
+        query: String(args?.query ?? ""),
+        scope: args?.scope ? String(args.scope) as MemoryScope : undefined,
+        type: args?.type ? String(args.type) as MemoryType : undefined,
+        limit: args?.limit ? Number(args.limit) : 10,
+      });
+
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: `Žádné výsledky pro: "${args?.query}"` }] };
+      }
+
+      let out = `### Sémantické vyhledávání: "${args?.query}"\n${results.length} výsledků:\n\n`;
+      for (const r of results) {
+        out += `**[${(r.score * 100).toFixed(0)}%]** scope:${r.payload.scope} type:${r.payload.type} agent:${r.payload.agent}\n`;
+        out += `> ${r.payload.text}\n`;
+        if (r.payload.tags?.length) out += `_tags: ${r.payload.tags.join(", ")}_\n`;
+        out += `id: \`${r.id}\` | ${r.payload.created_at}\n\n`;
+      }
+      return { content: [{ type: "text", text: out }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  }
+
+  if (name === "memory_search_global") {
+    try {
+      const results = await semanticSearchGlobal({
+        query: String(args?.query ?? ""),
+        limit: args?.limit ? Number(args.limit) : 10,
+      });
+
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: `Žádné globální záznamy pro: "${args?.query}"` }] };
+      }
+
+      let out = `### Global memory: "${args?.query}"\n${results.length} výsledků:\n\n`;
+      for (const r of results) {
+        out += `**[${(r.score * 100).toFixed(0)}%]** type:${r.payload.type} agent:${r.payload.agent}\n`;
+        out += `> ${r.payload.text}\n`;
+        out += `id: \`${r.id}\` | ${r.payload.created_at}\n\n`;
+      }
+      return { content: [{ type: "text", text: out }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  }
+
+  if (name === "memory_update") {
+    try {
+      await memoryUpdate({
+        id: String(args?.id ?? ""),
+        text: String(args?.text ?? ""),
+        collection: args?.collection === "global" ? "global" : "workspace",
+      });
+      return { content: [{ type: "text", text: `✅ Záznam ${args?.id} aktualizován` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  }
+
+  if (name === "memory_delete") {
+    try {
+      await memoryDelete({
+        id: String(args?.id ?? ""),
+        collection: args?.collection === "global" ? "global" : "workspace",
+      });
+      return { content: [{ type: "text", text: `✅ Záznam ${args?.id} smazán` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
   }
 
   if (name === "list_docs") {
