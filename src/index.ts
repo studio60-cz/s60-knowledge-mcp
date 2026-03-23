@@ -52,7 +52,7 @@ const SERVICE_INFO: Record<string, object> = {
     description: "Core NestJS backend — business logika, REST API",
     urls: {
       dev: "https://be.s60dev.cz/api",
-      staging: "https://be.s60hub.cz/api",
+      staging: "https://api.s60hub.cz/api",
       production: "https://be.studio60.cz/api",
     },
     stack: "NestJS + TypeORM + PostgreSQL",
@@ -450,6 +450,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["id"],
         },
       },
+      {
+        name: "get_session_context",
+        description:
+          "Vrátí session start kontext — zprávy od agentů + Qdrant/Neo4j paměť načtená při startu. " +
+          "VŽDY zavolej jako PRVNÍ VĚC v každé session. " +
+          "Soubor se po přečtení automaticky smaže (jednorázové použití).",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
     ],
   };
 });
@@ -680,6 +692,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (err) {
       return { content: [{ type: "text", text: `❌ Chyba: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
     }
+  }
+
+  if (name === "get_session_context") {
+    const contextFile = "/tmp/agent-session-context.md";
+    if (!fs.existsSync(contextFile)) {
+      return {
+        content: [{ type: "text", text: "Žádný session kontext (soubor neexistuje nebo již byl přečten)." }],
+      };
+    }
+    const content = readFileSafe(contextFile);
+    try { fs.unlinkSync(contextFile); } catch { /* ignore */ }
+    return {
+      content: [{ type: "text", text: content ?? "Prázdný kontext." }],
+    };
   }
 
   if (name === "list_docs") {
